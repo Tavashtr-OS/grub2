@@ -49,7 +49,24 @@ substvars =
 
 AUTOGEN_DEB_FILES = config templates preinst postinst postrm dirs install links maintscript bash-completion
 
-BUILD_PACKAGES := $(strip $(shell dh_listpackages))
+TAVASHTR_PACKAGES := \
+	grub-common \
+	grub2-common \
+	grub-pc-bin \
+	grub-pc \
+	grub-efi-amd64-bin \
+	grub-efi-amd64-unsigned \
+	grub-efi-amd64 \
+	grub-efi \
+	grub-emu \
+	grub-firmware-qemu \
+	grub-efi-amd64-signed-template
+
+TAVASHTR_EXCLUDED_PACKAGES := $(filter-out $(TAVASHTR_PACKAGES),$(shell sed -n 's/^Package: //p' debian/control))
+
+export DH_OPTIONS := $(patsubst %,-N%,$(TAVASHTR_EXCLUDED_PACKAGES))
+
+BUILD_PACKAGES := $(strip $(shell dh_listpackages $(DH_OPTIONS)))
 # REAL_PACKAGES build an actual grub variant (and therefore have both configure
 # and build stages). EXTRA_PACKAGES do not build grub but may depend on a
 # REAL_PACKAGE (and therefore only have a build stage)
@@ -544,7 +561,7 @@ override_dh_bugfiles:
 	dh_bugfiles $(patsubst %,-N%,$(filter grub-efi-%-signed-template,$(BUILD_PACKAGES))) -A
 
 override_dh_strip:
-	dh_strip -X/usr/bin/grub-emu -X/usr/lib/grub-xen/grub-x86_64-xen.bin -X/usr/lib/grub-xen/grub-i386-xen_pvh.bin -X/usr/lib/grub-xen/grub-i386-xen.bin
+	dh_strip --no-automatic-dbgsym -X/usr/bin/grub-emu -X/usr/lib/grub-xen/grub-x86_64-xen.bin -X/usr/lib/grub-xen/grub-i386-xen_pvh.bin -X/usr/lib/grub-xen/grub-i386-xen.bin
 
 override_dh_shlibdeps:
 	dh_shlibdeps -X.module
