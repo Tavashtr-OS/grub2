@@ -1,0 +1,191 @@
+name: Test and Build deb package
+
+on:
+  pull_request:
+    branches:
+      - tavashtr
+    types:
+      - opened
+      - synchronize
+      - reopened
+      - closed
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    if: github.event_name != 'pull_request' || github.event.action != 'closed' || github.event.pull_request.merged == true
+    name: Build Debian package
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+
+    env:
+      PACKAGE: grub2
+      LIFECYCLE_PACKAGES: grub-common grub2-common grub-pc-bin grub-efi-amd64-bin
+
+    steps:
+      - name: Install build tools
+        run: |
+          sudo apt-get update
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            devscripts \
+            sbuild \
+            mmdebstrap \
+            uidmap \
+            debian-archive-keyring \
+            debian-keyring \
+            liblwp-protocol-https-perl \
+            lintian \
+            autopkgtest \
+            ca-certificates
+
+      - name: Checkout repository
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Prepare Debian source package
+        id: source
+        shell: bash
+        run: |
+          test "$(dpkg-parsechangelog -S Source)" = "$PACKAGE"
+          version=$(dpkg-parsechangelog -S Version)
+          distribution=$(dpkg-parsechangelog -S Distribution)
+
+          # Use the Debian snapshot that this checkout was based on.
+          base=$(git merge-base HEAD origin/debian-trixie)
+          git show "$base:debian/changelog" > "$RUNNER_TEMP/debian-changelog"
+          debian_version=$(dpkg-parsechangelog -l "$RUNNER_TEMP/debian-changelog" -S Version)
+          debian_dsc="${PACKAGE}_${debian_version#*:}.dsc"
+
+          pool_prefix=${PACKAGE:0:1}
+          if [[ "$PACKAGE" == lib* ]]; then
+            pool_prefix=${PACKAGE:0:4}
+          fi
+          pool_path="$pool_prefix/$PACKAGE"
+
+          build_dir="$RUNNER_TEMP/source-build"
+          mkdir -p "$build_dir/source" "$RUNNER_TEMP/debian-source"
+          cd "$RUNNER_TEMP/debian-source"
+          if ! dget -d "https://deb.debian.org/debian/pool/main/$pool_path/$debian_dsc" &&
+             ! dget -d "https://deb.debian.org/debian-security/pool/updates/main/$pool_path/$debian_dsc"; then
+            debsnap --destdir snapshot "$PACKAGE" "$debian_version"
+            cd snapshot
+            dscverify "$debian_dsc"
+          fi
+          shopt -s nullglob
+          orig_tarballs=("${PACKAGE}"_*.orig*.tar.*)
+          if (( ${#orig_tarballs[@]} > 0 )); then
+            cp -- "${orig_tarballs[@]}" "$build_dir/"
+          fi
+
+          git -C "$GITHUB_WORKSPACE" archive HEAD -- . ':!.github' |
+            tar -xf - -C "$build_dir/source"
+          cd "$build_dir"
+          dpkg-source -b source
+          dsc="$build_dir/${PACKAGE}_${version#*:}.dsc"
+          test -f "$dsc"
+          printf 'dsc=%s\ndistribution=%s\n' "$dsc" "$distribution" >> "$GITHUB_OUTPUT"
+
+      - name: Configure and Bootstrap sbuild
+        shell: bash
+        run: |
+          if ! getsubids "$(id -un)" >/dev/null || ! getsubids -g "$(id -un)" >/dev/null; then
+            sudo usermod --add-subuids 100000-165535 --add-subgids 100000-165535 "$(id -un)"
+          fi
+
+          mmdebstrap --mode=unshare --variant=buildd --arch=amd64 \
+            --include=ca-certificates --skip=output/dev \
+            trixie "$RUNNER_TEMP/trixie-amd64.tar.xz" \
+            'deb [signed-by=/usr/share/keyrings/debian-archive-keyring.gpg] https://deb.debian.org/debian trixie main' \
+            'deb [signed-by=/usr/share/keyrings/debian-archive-keyring.gpg] https://deb.debian.org/debian trixie-updates main' \
+            'deb [signed-by=/usr/share/keyrings/debian-archive-keyring.gpg] https://deb.debian.org/debian-security trixie-security main'
+
+      - name: Build package in Debian Trixie
+        env:
+          SOURCE_DSC: ${{ steps.source.outputs.dsc }}
+          DISTRIBUTION: ${{ steps.source.outputs.distribution }}
+        run: |
+          mkdir -p "$GITHUB_WORKSPACE/artifacts"
+          sbuild --chroot-mode=unshare \
+            --chroot="$RUNNER_TEMP/trixie-amd64.tar.xz" \
+            --arch=amd64 --arch-all --dist="$DISTRIBUTION" \
+            --build-dir="$GITHUB_WORKSPACE/artifacts" \
+            --no-run-lintian "$SOURCE_DSC"
+
+      - name: Run Lintian
+        run: |
+          set -o pipefail
+          shopt -s nullglob
+          CHANGES_FILES=("$GITHUB_WORKSPACE"/artifacts/"${PACKAGE}"_*.changes)
+          if (( ${#CHANGES_FILES[@]} != 1 )); then
+            printf 'Expected one %s .changes file; found %s.\n' "$PACKAGE" "${#CHANGES_FILES[@]}" >&2
+            exit 1
+          fi
+          lintian \
+            --include-dir "$GITHUB_WORKSPACE/.github/lintian" \
+            --profile tavashtr/main \
+            --fail-on error \
+            --display-info \
+            "${CHANGES_FILES[0]}" 2>&1 | tee "$RUNNER_TEMP/lintian-report.log"
+
+      - name: Start Docker service
+        run: |
+          sudo systemctl start docker
+          sudo docker info >/dev/null
+
+      - name: Run package autopkgtests in Debian Trixie
+        if: hashFiles('debian/tests/control') != ''
+        env:
+          SOURCE_DSC: ${{ steps.source.outputs.dsc }}
+        run: |
+          shopt -s nullglob
+          mkdir -p "$RUNNER_TEMP/autopkgtest"
+          autopkgtest --output-dir="$RUNNER_TEMP/autopkgtest" \
+            --setup-commands='apt-get update' \
+            "$GITHUB_WORKSPACE"/artifacts/*.deb "$SOURCE_DSC" \
+            -- docker --sudo --pull debian:trixie
+
+      - name: Test install, upgrade, removal, and purge
+        run: |
+          set -o pipefail
+          sudo docker run --rm \
+            --env "LIFECYCLE_PACKAGES=${LIFECYCLE_PACKAGES:-}" \
+            --volume "$GITHUB_WORKSPACE/artifacts:/packages:ro" \
+            --volume "$GITHUB_WORKSPACE/.github/scripts/test-package-lifecycle.sh:/tmp/test-package-lifecycle.sh:ro" \
+            debian:trixie \
+            bash /tmp/test-package-lifecycle.sh /packages \
+            2>&1 | tee "$RUNNER_TEMP/package-lifecycle.log"
+
+      - name: Collect logs and reports
+        if: always()
+        run: |
+          mkdir -p "$GITHUB_WORKSPACE/artifacts/test-logs"
+
+          if [ -d "$RUNNER_TEMP/autopkgtest" ]; then
+            cp -R "$RUNNER_TEMP/autopkgtest" "$GITHUB_WORKSPACE/artifacts/test-logs/"
+          fi
+          find "$RUNNER_TEMP" -maxdepth 4 -type f \( -name '*.log' -o -name '*.log.gz' -o -name 'testinfo.json' \) \
+            -exec cp -f {} "$GITHUB_WORKSPACE/artifacts/test-logs/" \; 2>/dev/null || true
+
+      - name: Sanitize artifact filenames
+        if: always()
+        run: |
+          while IFS= read -r -d '' file; do
+            sanitized=${file//:/-}
+            if [[ "$sanitized" != "$file" ]]; then
+              mv -- "$file" "$sanitized"
+            fi
+          done < <(find "$GITHUB_WORKSPACE/artifacts" -type f -print0)
+
+      - name: Upload build artifacts
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ env.PACKAGE }}-build
+          path: artifacts/
+          if-no-files-found: warn
+          retention-days: 7

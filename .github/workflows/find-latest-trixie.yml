@@ -1,0 +1,181 @@
+name: Find and Sync Debian Trixie
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '0 4 * * *'
+      timezone: 'Asia/Kolkata'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: find-latest-trixie
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  sync-debian-source:
+    runs-on: ubuntu-latest
+
+    env:
+      PACKAGE: grub2
+
+    steps:
+      - name: Create GitHub App token
+        id: app-token
+        uses: actions/create-github-app-token@v3
+        with:
+          client-id: ${{ secrets.APP_CLIENT_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+          permission-actions: write
+          permission-contents: write
+
+      - name: Checkout repository
+        uses: actions/checkout@v7
+        with:
+          ref: debian-trixie
+          fetch-depth: 0
+          token: ${{ steps.app-token.outputs.token }}
+
+      - name: Install Debian source tools
+        run: |
+          sudo apt-get update
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            devscripts \
+            debian-keyring \
+            rsync
+
+      - name: Resolve latest Debian Trixie source
+        id: source
+        run: |
+          BEST_VER=""
+          BEST_URL=""
+          BEST_SUITE=""
+
+          for SUITE in trixie trixie-updates trixie-security; do
+              if [ "$SUITE" = "trixie-security" ]; then
+                  ROOT="https://deb.debian.org/debian-security"
+              else
+                  ROOT="https://deb.debian.org/debian"
+              fi
+              INDEX="${ROOT}/dists/${SUITE}/main/source/Sources.xz"
+
+              echo "Scanning $SUITE..."
+
+              # Download to disk to explicitly capture HTTP codes and network crashes
+              INDEX_FILE="$RUNNER_TEMP/Sources.xz"
+              if ! HTTP_CODE="$(curl \
+                  --silent --show-error --location \
+                  --connect-timeout 20 \
+                  --max-time 120 \
+                  --retry 3 \
+                  --output "$INDEX_FILE" \
+                  --write-out '%{http_code}' \
+                  "$INDEX")"; then
+                echo "::error::Network error downloading $SUITE."
+                exit 1
+              fi
+
+              if [[ "$HTTP_CODE" == "404" ]]; then
+                echo "Index for $SUITE not found. Skipping."
+                continue
+              elif [[ "$HTTP_CODE" != "200" ]]; then
+                echo "::error::Unexpected HTTP status $HTTP_CODE for $SUITE."
+                exit 1
+              fi
+
+              # Read the full index so xzcat can report a decompression error.
+              DATA=$(xzcat "$INDEX_FILE" | awk -v pkg="$PACKAGE" '
+                  function emit() {
+                      if (in_pkg && ver && dir && dsc) print ver, dir, dsc
+                  }
+                  $1 == "Package:" { in_pkg = ($2 == pkg) }
+                  in_pkg && $1 == "Version:" { ver = $2 }
+                  in_pkg && $1 == "Directory:" { dir = $2 }
+                  in_pkg && $3 ~ /\.dsc$/ { dsc = $3 }
+                  /^$/ { emit(); in_pkg = ver = dir = dsc = "" }
+                  END { emit() }
+              ')
+
+              while read -r VER DIR DSC; do
+                  [ -n "$VER" ] || continue
+
+                  if [ -z "$BEST_VER" ] || dpkg --compare-versions "$VER" gt "$BEST_VER"; then
+                      BEST_VER="$VER"
+                      BEST_URL="${ROOT}/${DIR}/${DSC}"
+                      BEST_SUITE="$SUITE"
+                  fi
+              done <<< "$DATA"
+          done
+
+          if [ -z "$BEST_VER" ]; then
+              echo "Error: $PACKAGE not found in Trixie indexes."
+              exit 1
+          fi
+
+          echo "Selected version: $BEST_VER"
+          echo "Selected suite: $BEST_SUITE"
+          echo "DSC URL: $BEST_URL"
+
+          echo "version=$BEST_VER" >> "$GITHUB_OUTPUT"
+          echo "suite=$BEST_SUITE" >> "$GITHUB_OUTPUT"
+          echo "dsc_url=$BEST_URL" >> "$GITHUB_OUTPUT"
+
+      - name: Check whether Debian source is newer
+        id: version_check
+        env:
+          NEW_VERSION: ${{ steps.source.outputs.version }}
+        run: |
+          CURRENT_VERSION=$(dpkg-parsechangelog -S Version)
+
+          echo "Existing changelog version: $CURRENT_VERSION"
+          echo "New Debian source version: $NEW_VERSION"
+
+          if dpkg --compare-versions "$NEW_VERSION" gt "$CURRENT_VERSION"; then
+            echo "update=true" >> "$GITHUB_OUTPUT"
+            echo "A newer Debian source version is available."
+          else
+            echo "update=false" >> "$GITHUB_OUTPUT"
+            echo "No newer Debian source version. Skipping import."
+          fi
+
+      - name: Download exact Debian source with dget
+        if: steps.version_check.outputs.update == 'true'
+        env:
+          DSC_URL: ${{ steps.source.outputs.dsc_url }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/debian-source"
+          cd "$RUNNER_TEMP/debian-source"
+          dget -d "$DSC_URL"
+
+      - name: Import and push newer Debian source
+        id: update_debian
+        if: steps.version_check.outputs.update == 'true'
+        env:
+          DSC_URL: ${{ steps.source.outputs.dsc_url }}
+          NEW_VERSION: ${{ steps.source.outputs.version }}
+        run: |
+          dsc_file="${DSC_URL##*/}"
+          source_dir="$RUNNER_TEMP/debian-source/$PACKAGE"
+
+          dpkg-source --skip-patches -x "$RUNNER_TEMP/debian-source/$dsc_file" "$source_dir"
+          test "$(dpkg-parsechangelog -l "$source_dir/debian/changelog" -S Source)" = "$PACKAGE"
+          test "$(dpkg-parsechangelog -l "$source_dir/debian/changelog" -S Version)" = "$NEW_VERSION"
+
+          # Mirror the new snapshot, including deletions, while preserving Git metadata.
+          rsync -a --delete --exclude='.git' "$source_dir/" ./
+          git add -f -A
+          git config user.name "Tavashtr Sync Bot"
+          git config user.email "githubci@tavashtr.com"
+          git commit -m "Import Debian source package $dsc_file"
+          git push origin HEAD:refs/heads/debian-trixie
+
+      - name: Dispatch Debian Trixie integration
+        if: steps.update_debian.outcome == 'success'
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: gh workflow run integrate-debian-trixie.yml --ref tavashtr
