@@ -83,6 +83,27 @@ jobs:
           git switch --create "$branch" origin/tavashtr
           echo "branch=$branch" >> "$GITHUB_OUTPUT"
 
+      - name: Look up Debian binary versions
+        if: steps.prepare.outputs.branch != ''
+        shell: bash
+        env:
+          TARGET_ARCH: amd64
+        run: |
+          set -euo pipefail
+          changelog="$RUNNER_TEMP/changelogs/debian-trixie"
+          source_package=$(dpkg-parsechangelog --file "$changelog" --show-field Source)
+          source_version=$(dpkg-parsechangelog --file "$changelog" --show-field Version)
+
+          # Use the Trixie image's archive keys to verify Debian metadata.
+          export DEBIAN_ARCHIVE_KEYRING="$RUNNER_TEMP/debian-archive-keyring.gpg"
+          sudo docker run --rm --pull=always debian:trixie-slim \
+            cat /usr/share/keyrings/debian-archive-keyring.gpg > "$DEBIAN_ARCHIVE_KEYRING"
+
+          bash .github/scripts/lookup-debian-binaries.sh \
+            "$source_package" "$source_version" "$TARGET_ARCH" \
+            > "$RUNNER_TEMP/debian-binaries.tsv"
+          cat "$RUNNER_TEMP/debian-binaries.tsv"
+
       - name: Merge Debian source and resolve changelog
         if: steps.prepare.outputs.branch != ''
         shell: bash
@@ -106,7 +127,8 @@ jobs:
           ./.github/scripts/resolve-tavashtr-changelog.sh \
             "$RUNNER_TEMP/changelogs/tavashtr" \
             "$RUNNER_TEMP/changelogs/debian-trixie" \
-            debian/changelog
+            debian/changelog \
+            "$RUNNER_TEMP/debian-binaries.tsv"
 
           git add debian/changelog
           git commit --no-edit

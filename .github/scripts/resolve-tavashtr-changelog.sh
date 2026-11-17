@@ -2,7 +2,7 @@
 set -eu
 
 usage() {
-  echo "Usage: $0 <tavashtr-changelog> <debian-trixie-changelog> <output-path>" >&2
+  echo "Usage: $0 <tavashtr-changelog> <debian-trixie-changelog> <output-path> <debian-binaries.tsv>" >&2
   exit 2
 }
 
@@ -11,16 +11,18 @@ fail() {
   exit 1
 }
 
-[ "$#" -eq 3 ] || usage
+[ "$#" -eq 4 ] || usage
 
 tavashtr_changelog=$1
 debian_changelog=$2
 output_path=$3
-suffix="+tavashtr1"
+binary_versions=$4
+suffix="+0tavashtr1"
 
-for input in "$tavashtr_changelog" "$debian_changelog"; do
+for input in "$tavashtr_changelog" "$debian_changelog" "$binary_versions"; do
   [ -f "$input" ] || fail "input file does not exist: $input"
 done
+[ -s "$binary_versions" ] || fail "binary version list is empty: $binary_versions"
 
 command -v dpkg-parsechangelog >/dev/null 2>&1 ||
   fail "dpkg-parsechangelog is required; install devscripts"
@@ -74,11 +76,53 @@ case "$debian_version" in *"$suffix")
     fail "Debian version already ends in '$suffix': $debian_version"
     ;;
 esac
-new_version="${debian_version}${suffix}"
+binary_base=$debian_version
+tab=$(printf '\t')
+while IFS="$tab" read -r _binary _arch version _suite; do
+  case "$version" in
+    "$debian_version"+b*)
+      rebuild=${version#"$debian_version"+b}
+      case "$rebuild" in
+        ''|*[!0-9]*) continue ;;
+      esac
+
+      if dpkg --compare-versions "$version" gt "$binary_base"; then
+        binary_base=$version
+      fi
+      ;;
+  esac
+done < "$binary_versions"
+
+tavashtr_distribution=$(get_field "$tavashtr_changelog" Distribution)
+previous_version=$(get_field "$tavashtr_changelog" Version)
+if [ "$tavashtr_distribution" = "UNRELEASED" ]; then
+  previous_version=$(dpkg-parsechangelog --file "$tavashtr_changelog" \
+    --offset 1 --count 1 --show-field Version)
+fi
+
+new_version="${binary_base}${suffix}"
+
+# Handle Debian revisions like -1deb13u1 when they would lower the version.
+if [ -n "$previous_version" ] &&
+   ! dpkg --compare-versions "$new_version" gt "$previous_version"; then
+  corrected_base=$(printf '%s\n' "$debian_version" |
+    sed -E 's/(-[0-9]+)(deb13u[0-9]+)$/\1+\2/')
+  if [ "$corrected_base" != "$debian_version" ]; then
+    rebuild_suffix=${binary_base#"$debian_version"}
+    new_version="${corrected_base}${rebuild_suffix}${suffix}"
+  fi
+fi
+
+dpkg --compare-versions "$new_version" gt "$binary_base" ||
+  fail "generated version $new_version must be higher than Debian version $binary_base"
+
+if [ -n "$previous_version" ]; then
+  dpkg --compare-versions "$new_version" gt "$previous_version" ||
+    fail "generated version $new_version must be higher than previous version $previous_version"
+fi
 
 urgency=$(get_field "$debian_changelog" Urgency)
 maintainer=$(get_field "$tavashtr_changelog" Maintainer)
-tavashtr_distribution=$(get_field "$tavashtr_changelog" Distribution)
 
 tmpdir=$(mktemp -d "${TMPDIR:-/tmp}/resolve-tavashtr-changelog.XXXXXX")
 output_tmp=""
@@ -128,7 +172,7 @@ output_tmp=$(mktemp "$output_dir/.$(basename "$output_path").XXXXXX")
   printf '\n'
 
   printf '\n -- %s  %s\n\n' "$maintainer" "$(date -R)"
-  
+
   if [ "$tavashtr_distribution" = "UNRELEASED" ]; then
     entries_after_first "$tavashtr_changelog"
   else
