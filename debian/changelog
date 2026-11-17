@@ -1,3 +1,12 @@
+grub2 (2.06-13+deb12u2+tavashtr1) UNRELEASED; urgency=medium
+
+  * Added words to make changelog clearer
+  * Added workflows for automation
+  * Added tavashtr sbat entry
+  * Excluded packages that are not useful to tavashtr
+
+ -- Himanshu Kumar Gupta <himanshukumargupta@tavashtr.com>  Tue, 17 Nov 2026 11:28:56 +0530
+
 grub2 (2.06-13+deb12u2) bookworm; urgency=medium
 
   [ Julian Andres Klode ]
