@@ -161,13 +161,13 @@ output_tmp=$(mktemp "$output_dir/.$(basename "$output_path").XXXXXX")
     if grep -Eq '^[[:space:]]+\[.*\][[:space:]]*$' "$tmpdir/tavashtr.body"; then
       cat "$tmpdir/tavashtr.body"
     else
-      printf '  [ Tavashtr ]\n'
+      printf '  [ From Tavashtr ]\n'
       cat "$tmpdir/tavashtr.body"
     fi
     printf '\n'
   fi
 
-  printf '  [ Debian ]\n'
+  printf '  [ From Debian ]\n'
   cat "$tmpdir/debian.body"
   printf '\n'
 
