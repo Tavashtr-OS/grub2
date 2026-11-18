@@ -128,7 +128,7 @@ jobs:
           lintian \
             --include-dir "$GITHUB_WORKSPACE/.github/lintian" \
             --profile tavashtr/main \
-            --fail-on none \
+            --fail-on error \
             --display-info \
             "${CHANGES_FILES[0]}" 2>&1 | tee "$RUNNER_TEMP/lintian-report.log"
 
