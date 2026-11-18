@@ -1,5 +1,6 @@
-grub2 (2.06-13+deb12u2+tavashtr1) UNRELEASED; urgency=medium
+grub2 (2.06-13+deb12u2+0tavashtr1) tavashtr; urgency=medium
 
+  [ From Tavashtr ]
   * Added words to make changelog clearer
   * Added workflows for automation
   * Added tavashtr sbat entry
