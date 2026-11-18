@@ -129,7 +129,7 @@ jobs:
 
             if [[ "$conflicts" != debian/changelog ]]; then
               if [[ -z "$RESOLUTION_REF" ]]; then
-                echo '::error::Manual resolution required. Push a helper merge and supply resolution_ref.'
+                echo '::error::Manual resolution required. Push the branch containing your manual resolution merge commit, then enter its name in resolution_ref.'
                 printf '%s\n' "$conflicts"
                 exit 1
               fi
@@ -141,12 +141,12 @@ jobs:
               tavashtr_commit=$(git rev-parse HEAD)
 
               if [[ $(git show -s --format=%P "$resolution_commit") != "$tavashtr_commit $debian_commit" ]]; then
-                echo '::error::Recreate the manual resolution merge from the current Tavashtr and Debian tips.'
+                echo '::error::Recreate the manual resolution merge from the current Tavashtr and Debian branch tips.'
                 exit 1
               fi
 
               if ! git diff --quiet HEAD "$resolution_commit" -- debian/changelog; then
-                echo '::error::Keep the Tavashtr changelog in the manual resolution merge.'
+                echo '::error::Keep the Tavashtr branch changelog in the manual resolution merge.'
                 exit 1
               fi
 
