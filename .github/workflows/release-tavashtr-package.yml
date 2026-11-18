@@ -1,0 +1,74 @@
+name: Release a Tavashtr package
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-tavashtr-${{ github.ref }}
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  release:
+    if: github.ref == 'refs/heads/tavashtr'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    outputs:
+      commit: ${{ steps.release.outputs.commit }}
+
+    steps:
+      - name: Check out Tavashtr
+        uses: actions/checkout@v7
+        with:
+          ref: tavashtr
+          fetch-depth: 0
+
+      - name: Check for an unreleased entry
+        id: changelog
+        run: |
+          if ! command -v dpkg-parsechangelog >/dev/null; then
+            sudo apt-get update
+            sudo apt-get install -y --no-install-recommends dpkg-dev
+          fi
+          distribution=$(dpkg-parsechangelog --show-field Distribution)
+          if [[ "$distribution" == UNRELEASED ]]; then
+            echo 'unreleased=true' >> "$GITHUB_OUTPUT"
+          else
+            echo "Skipping release because the top changelog entry targets $distribution."
+          fi
+
+      - name: Release the changelog entry
+        id: release
+        if: steps.changelog.outputs.unreleased == 'true'
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends debian-archive-keyring
+
+          bash .github/scripts/release-tavashtr-changelog.sh
+
+          version=$(dpkg-parsechangelog --show-field Version)
+          git config user.name "Tavashtr Release Bot"
+          git config user.email "githubci@tavashtr.com"
+          git add -- debian/changelog
+          git commit -m "Release Tavashtr package $version" -- debian/changelog
+          git push origin HEAD:refs/heads/tavashtr
+          printf 'commit=%s\n' "$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+  dispatch-build:
+    needs: release
+    if: needs.release.outputs.commit != ''
+    runs-on: ubuntu-latest
+    permissions:
+      actions: write
+    steps:
+      - name: Dispatch the test and build workflow
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow run test-build-package.yml --ref tavashtr --repo "$GITHUB_REPOSITORY"

@@ -27,6 +27,9 @@ done
 command -v dpkg-parsechangelog >/dev/null 2>&1 ||
   fail "dpkg-parsechangelog is required; install devscripts"
 
+# shellcheck source=.github/scripts/tavashtr-version.sh
+. "$(dirname "$0")/tavashtr-version.sh"
+
 get_field() {
   dpkg-parsechangelog --file "$1" --show-field "$2"
 }
@@ -76,22 +79,7 @@ case "$debian_version" in *"$suffix")
     fail "Debian version already ends in '$suffix': $debian_version"
     ;;
 esac
-binary_base=$debian_version
-tab=$(printf '\t')
-while IFS="$tab" read -r _binary _arch version _suite; do
-  case "$version" in
-    "$debian_version"+b*)
-      rebuild=${version#"$debian_version"+b}
-      case "$rebuild" in
-        ''|*[!0-9]*) continue ;;
-      esac
-
-      if dpkg --compare-versions "$version" gt "$binary_base"; then
-        binary_base=$version
-      fi
-      ;;
-  esac
-done < "$binary_versions"
+binary_base=$(latest_debian_binary_version "$debian_version" "$binary_versions")
 
 tavashtr_distribution=$(get_field "$tavashtr_changelog" Distribution)
 previous_version=$(get_field "$tavashtr_changelog" Version)
@@ -105,8 +93,7 @@ new_version="${binary_base}${suffix}"
 # Handle Debian revisions like -1deb13u1 when they would lower the version.
 if [ -n "$previous_version" ] &&
    ! dpkg --compare-versions "$new_version" gt "$previous_version"; then
-  corrected_base=$(printf '%s\n' "$debian_version" |
-    sed -E 's/(-[0-9]+)(deb13u[0-9]+)$/\1+\2/')
+  corrected_base=$(normalize_debian_security_version "$debian_version")
   if [ "$corrected_base" != "$debian_version" ]; then
     rebuild_suffix=${binary_base#"$debian_version"}
     new_version="${corrected_base}${rebuild_suffix}${suffix}"

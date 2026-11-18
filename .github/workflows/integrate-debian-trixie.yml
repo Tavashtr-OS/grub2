@@ -37,8 +37,8 @@ jobs:
 
       - name: Install Debian tools
         run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends dpkg-dev
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends dpkg-dev debian-archive-keyring
 
       - name: Prepare integration branch
         id: prepare
@@ -94,11 +94,6 @@ jobs:
           source_package=$(dpkg-parsechangelog --file "$changelog" --show-field Source)
           source_version=$(dpkg-parsechangelog --file "$changelog" --show-field Version)
 
-          # Use the Trixie image's archive keys to verify Debian metadata.
-          export DEBIAN_ARCHIVE_KEYRING="$RUNNER_TEMP/debian-archive-keyring.gpg"
-          sudo docker run --rm --pull=always debian:trixie-slim \
-            cat /usr/share/keyrings/debian-archive-keyring.gpg > "$DEBIAN_ARCHIVE_KEYRING"
-
           bash .github/scripts/lookup-debian-binaries.sh \
             "$source_package" "$source_version" "$TARGET_ARCH" \
             > "$RUNNER_TEMP/debian-binaries.tsv"
@@ -124,7 +119,7 @@ jobs:
             fi
           fi
 
-          ./.github/scripts/resolve-tavashtr-changelog.sh \
+          ./.github/scripts/resolve-merge-tavashtr-changelog.sh \
             "$RUNNER_TEMP/changelogs/tavashtr" \
             "$RUNNER_TEMP/changelogs/debian-trixie" \
             debian/changelog \

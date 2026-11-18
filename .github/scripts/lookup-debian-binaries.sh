@@ -89,6 +89,9 @@ done
 if [[ ! -s "$matches" ]]; then
   printf 'No Debian binaries found for %s %s (%s).\n' \
     "$source_package" "$source_version" "$target_arch" >&2
+  if [[ "${4:-}" == --allow-empty ]]; then
+    exit 0
+  fi
   exit 1
 fi
 
