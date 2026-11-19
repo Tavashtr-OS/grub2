@@ -2,12 +2,6 @@ name: Integrate Debian Trixie with tavashtr branch
 
 on:
   workflow_dispatch:
-    inputs:
-      resolution_ref:
-        description: 'Branch containing a manual resolution merge commit'
-        required: false
-        type: string
-        default: ''
 
 permissions:
   contents: read
@@ -108,55 +102,30 @@ jobs:
       - name: Merge Debian source and resolve changelog
         if: steps.prepare.outputs.branch != ''
         shell: bash
-        env:
-          RESOLUTION_REF: ${{ inputs.resolution_ref }}
         run: |
           set -euo pipefail
           git config user.name "Tavashtr Integration Bot"
           git config user.email "githubci@tavashtr.com"
 
-          resolved_changelog="$RUNNER_TEMP/resolved-changelog"
-          ./.github/scripts/resolve-merge-tavashtr-changelog.sh \
-            "$RUNNER_TEMP/changelogs/tavashtr" \
-            "$RUNNER_TEMP/changelogs/debian-trixie" \
-            "$resolved_changelog" \
-            "$RUNNER_TEMP/debian-binaries.tsv"
-
           if ! git merge --no-ff --no-commit origin/debian-trixie; then
-            debian_commit=$(git rev-parse --verify MERGE_HEAD)
-            conflicts=$(git diff --name-only --diff-filter=U)
-            [[ -n "$conflicts" ]] || exit 1
-
-            if [[ "$conflicts" != debian/changelog ]]; then
-              if [[ -z "$RESOLUTION_REF" ]]; then
-                echo '::error::Manual resolution required. Push the branch containing your manual resolution merge commit, then enter its name in resolution_ref.'
-                printf '%s\n' "$conflicts"
-                exit 1
-              fi
-
-              resolution_branch="refs/heads/$RESOLUTION_REF"
-              git check-ref-format "$resolution_branch"
-              git fetch --no-tags --refmap= origin "$resolution_branch"
-              resolution_commit=$(git rev-parse --verify 'FETCH_HEAD^{commit}')
-              tavashtr_commit=$(git rev-parse HEAD)
-
-              if [[ $(git show -s --format=%P "$resolution_commit") != "$tavashtr_commit $debian_commit" ]]; then
-                echo '::error::Recreate the manual resolution merge from the current Tavashtr and Debian branch tips.'
-                exit 1
-              fi
-
-              if ! git diff --quiet HEAD "$resolution_commit" -- debian/changelog; then
-                echo '::error::Keep the Tavashtr branch changelog in the manual resolution merge.'
-                exit 1
-              fi
-
-              git read-tree --reset -u "$resolution_commit"
+            mapfile -t conflicts < <(git diff --name-only --diff-filter=U)
+            if ! git rev-parse --verify --quiet MERGE_HEAD >/dev/null; then
+              exit 1
+            fi
+            if [[ "${conflicts[*]}" != "debian/changelog" ]]; then
+              printf '::error::Manual resolution required for conflicts: %s\n' \
+                "${conflicts[*]}"
+              exit 1
             fi
           fi
 
-          git rev-parse --verify MERGE_HEAD >/dev/null
-          install -m 0644 "$resolved_changelog" debian/changelog
-          git add -- debian/changelog
+          ./.github/scripts/resolve-merge-tavashtr-changelog.sh \
+            "$RUNNER_TEMP/changelogs/tavashtr" \
+            "$RUNNER_TEMP/changelogs/debian-trixie" \
+            debian/changelog \
+            "$RUNNER_TEMP/debian-binaries.tsv"
+
+          git add debian/changelog
           git commit --no-edit
 
       - name: Push integration branch and open PR

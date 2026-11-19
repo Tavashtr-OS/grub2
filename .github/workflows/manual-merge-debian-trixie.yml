@@ -1,0 +1,96 @@
+name: Manually merge Debian Trixie with tavashtr branch
+
+on:
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: integrate-debian-trixie
+  cancel-in-progress: false
+
+jobs:
+  manual-merge:
+    if: github.ref == 'refs/heads/tavashtr' || github.ref == 'refs/heads/debian-trixie'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Create GitHub App token
+        id: app-token
+        uses: actions/create-github-app-token@v3
+        with:
+          client-id: ${{ secrets.APP_CLIENT_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+          permission-contents: write
+          permission-pull-requests: write
+
+      - name: Check out Tavashtr
+        uses: actions/checkout@v7
+        with:
+          ref: tavashtr
+          fetch-depth: 0
+          token: ${{ steps.app-token.outputs.token }}
+
+      - name: Prepare the manual branch and open a PR
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if git merge-base --is-ancestor origin/debian-trixie HEAD; then
+            echo "Tavashtr already contains this Debian snapshot."
+            exit 0
+          fi
+
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends dpkg-dev debian-archive-keyring
+          debian_changelog="$RUNNER_TEMP/debian.changelog"
+          git show origin/debian-trixie:debian/changelog > "$debian_changelog"
+          version=$(dpkg-parsechangelog --file "$debian_changelog" --show-field Version)
+          branch="manual-resolution/trixie-update-${version//[:~]/_}"
+          if ! tip=$(git rev-parse --verify --quiet "refs/remotes/origin/$branch"); then
+            echo "::error::Run manual_resolve_branch.sh to create and push $branch."
+            exit 1
+          fi
+
+          # A retry after a successful push can already have the changelog commit.
+          message="Update Tavashtr changelog for Debian $version"
+          merge=$tip
+          if [[ $(git log -1 --format=%s "$tip") == "$message" &&
+                $(git diff-tree --no-commit-id --name-only -r "$tip") == debian/changelog ]]; then
+            merge=$(git rev-parse "$tip^")
+          fi
+          if [[ $(git show -s --format=%P "$merge") != "$(git rev-parse HEAD) $(git rev-parse origin/debian-trixie)" ]]; then
+            echo "::error::Recreate $branch from the current Tavashtr and Debian tips."
+            exit 1
+          fi
+          if ! git diff --quiet HEAD "$merge" -- debian/changelog; then
+            echo "::error::Keep the Tavashtr changelog in the manual merge."
+            exit 1
+          fi
+
+          if [[ "$merge" == "$tip" ]]; then
+            package=$(dpkg-parsechangelog --file "$debian_changelog" --show-field Source)
+            binaries="$RUNNER_TEMP/debian-binaries.tsv"
+            bash .github/scripts/lookup-debian-binaries.sh "$package" "$version" amd64 > "$binaries"
+            .github/scripts/resolve-merge-tavashtr-changelog.sh \
+              debian/changelog "$debian_changelog" "$RUNNER_TEMP/resolved-changelog" "$binaries"
+
+            git switch --detach "$merge"
+            install -m 0644 "$RUNNER_TEMP/resolved-changelog" debian/changelog
+            git add debian/changelog
+            git config user.name "Tavashtr Merge Bot"
+            git config user.email "githubci@tavashtr.com"
+            git commit -m "$message"
+            git push origin "HEAD:refs/heads/$branch"
+          fi
+
+          pr=$(gh pr list --base tavashtr --head "$branch" --state open --json url --jq '.[0].url // empty')
+          if [[ -n "$pr" ]]; then
+            echo "PR already open: $pr"
+            exit 0
+          fi
+          gh pr create \
+            --base tavashtr \
+            --head "$branch" \
+            --title "Manually merge Debian Trixie with tavashtr" \
+            --body "Merges Debian Trixie into tavashtr with manually resolved conflicts. The Debian package build must pass before merging."
