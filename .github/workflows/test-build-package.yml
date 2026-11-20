@@ -23,7 +23,7 @@ jobs:
 
     env:
       PACKAGE: grub2
-      LIFECYCLE_PACKAGES: grub-common grub2-common grub-pc-bin grub-efi-amd64-bin
+      LIFECYCLE_PACKAGES: grub-common grub2-common grub-pc-bin grub-efi-amd64-bin grub-efi-amd64-unsigned
 
     steps:
       - name: Install build tools
