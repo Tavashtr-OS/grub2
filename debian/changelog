@@ -1,3 +1,17 @@
+grub2 (2.12-9+deb13u4+0tavashtr1) tavashtr; urgency=medium
+
+  [ From Debian ]
+  [ Han Gao ]
+  * Apply patch from upstream to fix relocation overflow crash on riscv64
+    in grub.efi (Closes: #1140542)
+    - configure-Add-mno-relax-on-riscv
+      from 8fef533cf69547576f522b0e563c9c6fee635ece
+    - configure-Defer-check-for-mcmodel-large-until-PIC-PI
+      form 1aa0dd0c04a7e66d127915c54d7d7f1de5974d4f
+
+
+ -- Himanshu Kumar Gupta <himanshukumargupta@tavashtr.com>  Sun, 22 Nov 2026 02:28:52 +0000
+
 grub2 (2.12-9+deb13u2+0tavashtr1) tavashtr; urgency=medium
 
   [ From Debian ]
