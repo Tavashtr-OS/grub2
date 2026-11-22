@@ -1,3 +1,39 @@
+grub2 (2.12-9+deb13u4) trixie; urgency=medium
+
+  [ Han Gao ]
+  * Apply patch from upstream to fix relocation overflow crash on riscv64
+    in grub.efi (Closes: #1140542)
+    - configure-Add-mno-relax-on-riscv
+      from 8fef533cf69547576f522b0e563c9c6fee635ece
+    - configure-Defer-check-for-mcmodel-large-until-PIC-PI
+      form 1aa0dd0c04a7e66d127915c54d7d7f1de5974d4f
+
+ -- Steve McIntyre <93sam@debian.org>  Fri, 06 Nov 2026 11:48:32 +0000
+
+grub2 (2.12-9+deb13u3) trixie; urgency=medium
+
+  [ Fabian Grünbichler ]
+  * Patches for November 2025 CVEs
+    + CVE-2025-54770: a use-after-free issue in the network module's
+      VLAN handling code that can be used to trigger a denial of
+      service
+    + CVE-2025-54771: a use-after-free issue when closing a file which
+      can be used to trigger at least a denial of service
+    + CVE-2025-61661: mishandling of string conversion when reading data from a
+      (malicious) USB device, which can be used to trigger at least a denial of
+      service
+    + CVE-2025-61662: a use-after-free issue in the gettext module,
+      which can be used to trigger at least a denial of service
+    + CVE-2025-61663/CVE-2025-61664: two use-after-free issues when
+      unloading the `normal` module, which can be used to trigger at
+      least a denial of service
+    + Bump SBAT to grub,6 to match.
+  * Patches for September 2026 CVE
+    + CVE-2026-97876: serial MMIO secure boot bypass
+    + Bump SBAT to grub,7 to match.
+
+ -- Steve McIntyre <93sam@debian.org>  Thu, 05 Nov 2026 12:17:08 +0000
+
 grub2 (2.12-9+deb13u2) trixie; urgency=medium
 
   * Non-maintainer upload.
